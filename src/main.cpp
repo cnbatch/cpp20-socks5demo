@@ -48,6 +48,10 @@ constexpr uint8_t socks_reply_address_type_not_supported = 0x08;
 constexpr unsigned int socks_header_ipv4_size = 10;
 constexpr unsigned int socks_header_ipv6_size = 22;
 
+constexpr auto expire_seconds = std::chrono::seconds(180);
+
+uint8_t convert_error_code(asio::error_code ec);
+
 #pragma pack (push, 1)
 struct socks5_udp_packet_header
 {
@@ -76,6 +80,8 @@ struct socks5_udp_packet_ipv6
 	uint8_t data[1];
 };
 #pragma pack(pop)
+
+std::shared_ptr<asio::ip::address> tcp_local_address;
 
 class tcp_session : public std::enable_shared_from_this<tcp_session>
 {
@@ -156,6 +162,92 @@ private:
 	tcp_socket remote_socket;
 };
 
+class tcp_binding : public std::enable_shared_from_this<tcp_binding>
+{
+public:
+	tcp_binding(tcp_socket client_socket, tcp_acceptor acceptor) :
+		timer(client_socket.get_executor()), client_socket(std::move(client_socket)), acceptor(std::move(acceptor)){};
+
+	void start(std::array<uint8_t, 32> reply)
+	{
+		co_spawn(client_socket.get_executor(),
+			[self = shared_from_this()] { return self->watchdog(); },
+			detached);
+		co_spawn(client_socket.get_executor(),
+			[self = shared_from_this(), reply] { return self->handle_bind_request(reply); },
+			detached);
+	}
+private:
+	awaitable<void> watchdog()
+	{
+		asio::error_code ec;
+		auto now = std::chrono::steady_clock::now();
+		std::chrono::steady_clock::time_point deadline = now + expire_seconds;
+		while (deadline > now)
+		{
+			timer.expires_at(deadline);
+			co_await timer.async_wait(asio::redirect_error(asio::use_awaitable, ec));
+			if (ec)
+				co_return;
+			now = std::chrono::steady_clock::now();
+		}
+		ec.clear();
+		acceptor.cancel(ec);
+	}
+
+	awaitable<void> handle_bind_request(std::array<uint8_t, 32> reply)
+	{
+		asio::error_code ec;
+		try
+		{
+			unsigned int reply_size = 0;
+			tcp_socket listener_socket = co_await acceptor.async_accept(asio::redirect_error(asio::use_awaitable, ec));
+			if (ec)
+			{
+				reply[1] = convert_error_code(ec);
+				co_await client_socket.async_write_some(asio::buffer(reply, reply_size));
+				co_return;
+			}
+
+			tcp::endpoint remote_endpoint = listener_socket.remote_endpoint();
+			asio::ip::address remote_address = remote_endpoint.address();
+			uint16_t remote_port = remote_endpoint.port();
+			if (remote_address.is_v6())
+			{
+				reply_size = socks_header_ipv6_size;
+				reply[3] = socks_atyp_ipv6;
+				asio::ip::address_v6::bytes_type v6_bytes = remote_address.to_v6().to_bytes();
+				std::copy(v6_bytes.begin(), v6_bytes.end(), reply.begin() + 4);
+				*(uint16_t *)(reply.data() + 20) = htons(remote_port);
+
+			}
+			else
+			{
+				reply_size = socks_header_ipv4_size;
+				reply[3] = socks_atyp_ipv4;
+				asio::ip::address_v4::bytes_type v4_bytes = remote_address.to_v4().to_bytes();
+				*(uint32_t *)v4_bytes.data() = *(uint32_t *)(reply.data() + 4);
+				*(uint16_t *)(reply.data() + 8) = htons(remote_port);
+			}
+
+			// BIND: Second Reply
+			co_await client_socket.async_write_some(asio::buffer(reply, reply_size));
+
+			// 5. Forward Traffic
+			std::make_shared<tcp_session>(std::move(client_socket), std::move(listener_socket))->start();
+		}
+		catch (std::exception &e)
+		{
+			std::printf("TCP BIND Exception: %s\n", e.what());
+		}
+		ec.clear();
+		timer.cancel(ec);
+	}
+
+	asio::steady_timer timer;
+	tcp_socket client_socket;
+	tcp_acceptor acceptor;
+};
 
 class udp_session : public std::enable_shared_from_this<udp_session>
 {
@@ -384,7 +476,7 @@ uint8_t convert_error_code(asio::error_code ec)
 	return reply_code;
 }
 
-awaitable<void> socks5_access(tcp_socket client_socket)
+awaitable<void> socks5_access(tcp_socket client_socket, const char *username, const char *password)
 {
 	try
 	{
@@ -402,7 +494,13 @@ awaitable<void> socks5_access(tcp_socket client_socket)
 		std::optional<uint8_t> method_supported;
 		for (uint16_t i = 0; i < num_methods; i++)
 		{
-			if (data[i] == socks_method_no_auth)
+			if (data[i] == socks_method_no_auth && username == nullptr && password == nullptr)
+			{
+				method_supported = data[i];
+				break;
+			}
+
+			if (data[i] == socks_method_user_pwd && username && password)
 			{
 				method_supported = data[i];
 				break;
@@ -420,7 +518,52 @@ awaitable<void> socks5_access(tcp_socket client_socket)
 			co_return;
 		}
 
-		// 2. Request
+		// 2. Username / Password Authentication
+		if (chosen_method == socks_method_user_pwd)
+		{
+			std::string recv_username, recv_password;
+			bytes_read = co_await asio::async_read(client_socket, asio::buffer(data, 1), asio::transfer_exactly(1), asio::use_awaitable);
+			if (bytes_read != 1 || data[0] != 1)
+			{
+				std::cerr << "Invalid SOCKS version or message length incorrect." << std::endl;
+				co_return;
+			}
+			
+			// Length of Username
+			bytes_read = co_await asio::async_read(client_socket, asio::buffer(data, 1), asio::transfer_exactly(1), asio::use_awaitable);
+			if (bytes_read != 1)
+				co_return;
+			uint8_t username_length = data[0];
+			bytes_read = co_await asio::async_read(client_socket, asio::buffer(data, username_length), asio::transfer_exactly(username_length), asio::use_awaitable);
+			if (bytes_read != username_length)
+				co_return;
+			recv_username = std::string(data.data(), data.data() + username_length);
+
+			// Length of Password
+			bytes_read = co_await asio::async_read(client_socket, asio::buffer(data, 1), asio::transfer_exactly(1), asio::use_awaitable);
+			if (bytes_read != 1)
+				co_return;
+			uint8_t password_length = data[0];
+			bytes_read = co_await asio::async_read(client_socket, asio::buffer(data, password_length), asio::transfer_exactly(password_length), asio::use_awaitable);
+			if (bytes_read != password_length)
+				co_return;
+			recv_password = std::string(data.data(), data.data() + password_length);
+
+			data[0] = 1;
+			if (recv_username == username && recv_password == password)
+			{
+				data[1] = 0;
+				co_await asio::async_write(client_socket, asio::buffer(data, 2));
+			}
+			else
+			{
+				data[1] = 1;
+				co_await asio::async_write(client_socket, asio::buffer(data, 2));
+				co_return;
+			}
+		}
+
+		// 3. Request
 		bytes_read = co_await asio::async_read(client_socket, asio::buffer(data, 4), asio::transfer_exactly(4), asio::use_awaitable);
 		if (bytes_read != 4 || data[0] != socks_version)
 		{
@@ -507,7 +650,7 @@ awaitable<void> socks5_access(tcp_socket client_socket)
 		if (tcp_endpoint != nullptr)
 			tcp_endpoint->port(port);
 
-		// 3. Establish Connection
+		// 4. Establish Connection
 		switch (command)
 		{
 		case socks_cmd_connect:
@@ -560,7 +703,7 @@ awaitable<void> socks5_access(tcp_socket client_socket)
 					reply[1] = convert_error_code(ec);
 				else
 					reply[1] = socks_reply_network_unreachable;
-				// 4. Send Reply
+				// 5. Send Reply
 				co_await client_socket.async_write_some(asio::buffer(reply, reply_size));
 				break;
 			}
@@ -570,15 +713,53 @@ awaitable<void> socks5_access(tcp_socket client_socket)
 				reply[3] = socks_atyp_ipv6;
 			}
 
-			// 4. Send Reply
+			tcp_local_address = std::make_shared<asio::ip::address>(remote_socket.local_endpoint().address());
+
+			// 5. Send Reply
 			co_await client_socket.async_write_some(asio::buffer(reply, reply_size));
 
-			// 5. Forward Traffic
+			// 6. Forward Traffic
 			std::make_shared<tcp_session>(std::move(client_socket), std::move(remote_socket))->start();
 			break;
 		}
 		case socks_cmd_bind:
 		{
+			if (tcp_local_address == nullptr)
+			{
+				reply_size = socks_header_ipv4_size;
+				reply[0] = socks_version;
+				reply[1] = socks_reply_command_not_supported;
+				reply[3] = socks_atyp_ipv4;
+				co_await asio::async_write(client_socket, asio::buffer(reply, reply_size));
+				break;
+			}
+
+			asio::error_code ec;
+			tcp_acceptor acceptor(client_socket.get_executor());
+			acceptor.set_option(asio::detail::socket_option::integer<SOL_SOCKET, SO_RCVTIMEO>{ 60000 });
+			uint16_t listener_port = acceptor.local_endpoint().port();
+			reply[1] = socks_reply_success;
+			if (tcp_local_address->is_v6())
+			{
+				reply_size = socks_header_ipv6_size;
+				reply[3] = socks_atyp_ipv6;
+				asio::ip::address_v6::bytes_type v6_bytes = tcp_local_address->to_v6().to_bytes();
+				std::copy(v6_bytes.begin(), v6_bytes.end(), reply.begin() + 4);
+				*(uint16_t *)(reply.data() + 20) = htons(listener_port);
+
+			}
+			else
+			{
+				reply_size = socks_header_ipv4_size;
+				reply[3] = socks_atyp_ipv4;
+				asio::ip::address_v4::bytes_type v4_bytes = tcp_local_address->to_v4().to_bytes();
+				*(uint32_t *)v4_bytes.data() = *(uint32_t *)(reply.data() + 4);
+				*(uint16_t *)(reply.data() + 8) = htons(listener_port);
+			}
+
+			// BIND: First Reply
+			asio::async_write(client_socket, asio::buffer(reply, reply_size), [](const asio::error_code &e, size_t n) {});
+			std::make_shared<tcp_binding>(std::move(client_socket), std::move(acceptor))->start(reply);
 			break;
 		}
 		case socks_cmd_udp_associate:
@@ -619,7 +800,7 @@ awaitable<void> socks5_access(tcp_socket client_socket)
 			if (ec)
 			{
 				reply[1] = convert_error_code(ec);
-				// 4. Send Reply
+				// 5. Send Reply
 				co_await client_socket.async_write_some(asio::buffer(reply, reply_size));
 				break;
 			}
@@ -637,10 +818,10 @@ awaitable<void> socks5_access(tcp_socket client_socket)
 				*(uint16_t *)(reply.data() + 8) = htons(binding_endpoint.port());
 			}
 
-			// 4. Send Reply
+			// 5. Send Reply
 			co_await client_socket.async_write_some(asio::buffer(reply, reply_size));
 
-			// 5. Forward Traffic
+			// 6. Forward Traffic
 			std::make_shared<udp_session>(std::move(client_socket), std::move(listen_udp_socket))->start();
 			break;
 		}
@@ -662,29 +843,29 @@ awaitable<void> socks5_access(tcp_socket client_socket)
 	}
 }
 
-awaitable<void> listener_v4()
+awaitable<void> listener_v4(const char *username, const char *password)
 {
 	asio::any_io_executor executor = co_await this_coro::executor;
 	tcp_acceptor acceptor(executor, { tcp::v4(), 1080 });
 	while (true)
 	{
 		tcp_socket socket = co_await acceptor.async_accept();
-		co_spawn(executor, socks5_access(std::move(socket)), detached);
+		co_spawn(executor, socks5_access(std::move(socket), username, password), detached);
 	}
 }
 
-awaitable<void> listener_v6()
+awaitable<void> listener_v6(const char *username, const char *password)
 {
 	asio::any_io_executor executor = co_await this_coro::executor;
 	tcp_acceptor acceptor(executor, { tcp::v6(), 1080 });
 	while (true)
 	{
 		tcp_socket socket = co_await acceptor.async_accept();
-		co_spawn(executor, socks5_access(std::move(socket)), detached);
+		co_spawn(executor, socks5_access(std::move(socket), username, password), detached);
 	}
 }
 
-int main()
+int main(int argc, char *argv[])
 {
 	try
 	{
@@ -693,8 +874,16 @@ int main()
 		asio::signal_set signals(io_context, SIGINT, SIGTERM);
 		signals.async_wait([&](auto, auto) { io_context.stop(); });
 
-		co_spawn(io_context, listener_v4(), detached);
-		co_spawn(io_context, listener_v6(), detached);
+		if (argc == 3)
+		{
+			co_spawn(io_context, listener_v4(argv[1], argv[2]), detached);
+			co_spawn(io_context, listener_v6(argv[1], argv[2]), detached);
+		}
+		else
+		{
+			co_spawn(io_context, listener_v4(nullptr, nullptr), detached);
+			co_spawn(io_context, listener_v6(nullptr, nullptr), detached);
+		}
 
 		io_context.run();
 	}
@@ -702,4 +891,5 @@ int main()
 	{
 		std::printf("Exception: %s\n", e.what());
 	}
+	return 0;
 }

@@ -8,13 +8,22 @@ Socks5 Server Demo implemented in C++20 coroutine with ASIO library
 - IPv4 Connection
 - IPv6 Connection
 - ‘No Auth’ method
+- Username / Password Authentication method
 - TCP `Connect` request
+- TCP `BIND` request
 - UDP `Associate` request
 
 ## Features Not supported
 - GSSAPI
-- Username / Password Authentication method
-- TCP `BIND` request
+
+### Username / Password Authentication
+Run socks5demo with username and password.
+
+For example, username is ‘user’, password is ‘door’:
+
+```
+./socks5demo user door
+```
 
 ## Requirements
 - `ASIO` library must be installed first.
@@ -41,13 +50,22 @@ cmake --build .
 - IPv4 连接
 - IPv6 连接
 - ‘No Auth’ 认证模式
+- 用户名 / 密码 认证模式
 - TCP `Connect` 请求
+- TCP `BIND` 请求
 - UDP `Associate` 请求
 
 ## 未实现的特性
 - GSSAPI
-- 用户名 / 密码 认证模式
-- TCP `BIND` 请求
+
+### 用户名 / 密码 认证模式
+运行 socks5demo 并传入用户名与密码。
+
+例如，用户名是‘user’，密码是‘door’：
+
+```
+./socks5demo user door
+```
 
 ## 编译前置要求
 - 必须先安装 `ASIO` 库
@@ -76,13 +94,22 @@ cmake --build .
 - IPv4 連接
 - IPv6 連接
 - ‘No Auth’ 認證方式
+- 用戶名稱 / 密碼 認證模式
 - TCP `Connect` 請求
+- TCP `BIND` 請求
 - UDP `Associate` 請求
 
 ## 未實現的特性
 - GSSAPI
-- 用戶名稱 / 密碼 認證模式
-- TCP `BIND` 請求
+
+### 用戶名稱 / 密碼 認證模式
+執行 socks5demo 並傳入用戶名稱及密碼。
+
+例如，用戶名稱是‘user’，密碼是‘door’：
+
+```
+./socks5demo user door
+```
 
 ## 編譯前置要求
 - 必須事先裝好 C++庫 `ASIO`
