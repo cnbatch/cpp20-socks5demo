@@ -843,25 +843,39 @@ awaitable<void> socks5_access(tcp_socket client_socket, const char *username, co
 	}
 }
 
-awaitable<void> listener_v4(const char *username, const char *password)
+awaitable<void> listener_ipv4(const char *username, const char *password, uint16_t port = 1080)
 {
 	asio::any_io_executor executor = co_await this_coro::executor;
-	tcp_acceptor acceptor(executor, { tcp::v4(), 1080 });
-	while (true)
+	try
 	{
-		tcp_socket socket = co_await acceptor.async_accept();
-		co_spawn(executor, socks5_access(std::move(socket), username, password), detached);
+		tcp_acceptor acceptor(executor, { tcp::v4(), port });
+		while (true)
+		{
+			tcp_socket socket = co_await acceptor.async_accept();
+			co_spawn(executor, socks5_access(std::move(socket), username, password), detached);
+		}
+	}
+	catch (std::exception &e)
+	{
+		std::printf("IPv4 socks5_listen Exception: %s\n", e.what());
 	}
 }
 
-awaitable<void> listener_v6(const char *username, const char *password)
+awaitable<void> listener_ipv6(const char *username, const char *password, uint16_t port = 1080)
 {
 	asio::any_io_executor executor = co_await this_coro::executor;
-	tcp_acceptor acceptor(executor, { tcp::v6(), 1080 });
-	while (true)
+	try
 	{
-		tcp_socket socket = co_await acceptor.async_accept();
-		co_spawn(executor, socks5_access(std::move(socket), username, password), detached);
+		tcp_acceptor acceptor(executor, { tcp::v6(), port });
+		while (true)
+		{
+			tcp_socket socket = co_await acceptor.async_accept();
+			co_spawn(executor, socks5_access(std::move(socket), username, password), detached);
+		}
+	}
+	catch (std::exception &e)
+	{
+		std::printf("IPv6 socks5_listen Exception: %s\n", e.what());
 	}
 }
 
@@ -874,15 +888,42 @@ int main(int argc, char *argv[])
 		asio::signal_set signals(io_context, SIGINT, SIGTERM);
 		signals.async_wait([&](auto, auto) { io_context.stop(); });
 
-		if (argc == 3)
+		if (argc == 1)
 		{
-			co_spawn(io_context, listener_v4(argv[1], argv[2]), detached);
-			co_spawn(io_context, listener_v6(argv[1], argv[2]), detached);
+			co_spawn(io_context, listener_ipv4(nullptr, nullptr), detached);
+			co_spawn(io_context, listener_ipv6(nullptr, nullptr), detached);
+		}
+		else if (argc == 2)
+		{
+			int port = std::stoi(argv[1]);
+			if (port < 1 || port > 65535)
+			{
+				std::printf("Incorrect port number: %d\n", port);
+				return 1;
+			}
+			co_spawn(io_context, listener_ipv4(nullptr, nullptr, (uint16_t)port), detached);
+			co_spawn(io_context, listener_ipv6(nullptr, nullptr, (uint16_t)port), detached);
+		}
+		else if (argc == 3)
+		{
+			co_spawn(io_context, listener_ipv4(argv[1], argv[2]), detached);
+			co_spawn(io_context, listener_ipv6(argv[1], argv[2]), detached);
+		}
+		else if (argc == 4)
+		{
+			int port = std::stoi(argv[1]);
+			if (port < 1 || port > 65535)
+			{
+				std::printf("Incorrect port number: %d\n", (uint16_t)port);
+				return 1;
+			}
+			co_spawn(io_context, listener_ipv4(argv[2], argv[3], port), detached);
+			co_spawn(io_context, listener_ipv6(argv[2], argv[3], port), detached);
 		}
 		else
 		{
-			co_spawn(io_context, listener_v4(nullptr, nullptr), detached);
-			co_spawn(io_context, listener_v6(nullptr, nullptr), detached);
+			std::printf("Incorrect arguments\n");
+			return 1;
 		}
 
 		io_context.run();

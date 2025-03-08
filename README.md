@@ -2,6 +2,7 @@
 Socks5 Server Demo implemented in C++20 coroutine with ASIO library
 
 [简体中文版](#简体中文版)
+
 [繁體中文版](#繁體中文版)
 
 ## Supported Features
@@ -23,6 +24,18 @@ For example, username is ‘user’, password is ‘door’:
 
 ```
 ./socks5demo user door
+```
+
+### Specify Port Number
+Default port number is 1080. If the port number must be changed, for example, use 1180 instead:
+```
+./socks5demo 1180
+```
+
+### Specify Port Number + Username / Password Authentication
+
+```
+./socks5demo 1180 user door
 ```
 
 ## Requirements
@@ -67,6 +80,18 @@ cmake --build .
 ./socks5demo user door
 ```
 
+### 指定端口号
+默认端口号是 1080，如果需要使用其他端口号，可以自行指定，例如使用 1180 端口号
+```
+./socks5demo 1180
+```
+
+### 指定端口号 + 用户名 / 密码 认证模式
+
+```
+./socks5demo 1180 user door
+```
+
 ## 编译前置要求
 - 必须先安装 `ASIO` 库
 - 支持C++20的编译器
@@ -109,6 +134,18 @@ cmake --build .
 
 ```
 ./socks5demo user door
+```
+
+### 指定通訊埠號
+預設通訊埠號是 1080，如果需要使用其他通訊埠號，可以自行指定，例如使用 1180 通訊埠號
+```
+./socks5demo 1180
+```
+
+### 指定通訊埠號 + 用戶名稱 / 密碼 認證模式
+
+```
+./socks5demo 1180 user door
 ```
 
 ## 編譯前置要求
