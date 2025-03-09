@@ -50,6 +50,12 @@ constexpr unsigned int socks_header_ipv6_size = 22;
 
 constexpr auto expire_seconds = std::chrono::seconds(180);
 
+#ifdef __linux__	
+constexpr bool linux_system = true;
+#else
+constexpr bool linux_system = false;
+#endif
+
 uint8_t convert_error_code(asio::error_code ec);
 
 #pragma pack (push, 1)
@@ -876,6 +882,11 @@ awaitable<void> listener_ipv6(const char *username, const char *password, uint16
 	catch (std::exception &e)
 	{
 		std::printf("IPv6 socks5_listen Exception: %s\n", e.what());
+		if constexpr (linux_system)
+		{
+			std::printf("Fallback to IPv4\n");
+			co_spawn(executor, listener_ipv4(nullptr, nullptr), detached);
+		}
 	}
 }
 
@@ -890,8 +901,9 @@ int main(int argc, char *argv[])
 
 		if (argc == 1)
 		{
-			co_spawn(io_context, listener_ipv4(nullptr, nullptr), detached);
 			co_spawn(io_context, listener_ipv6(nullptr, nullptr), detached);
+			if constexpr (!linux_system)
+				co_spawn(io_context, listener_ipv4(nullptr, nullptr), detached);
 		}
 		else if (argc == 2)
 		{
@@ -901,13 +913,15 @@ int main(int argc, char *argv[])
 				std::printf("Incorrect port number: %d\n", port);
 				return 1;
 			}
-			co_spawn(io_context, listener_ipv4(nullptr, nullptr, (uint16_t)port), detached);
 			co_spawn(io_context, listener_ipv6(nullptr, nullptr, (uint16_t)port), detached);
+			if constexpr (!linux_system)
+				co_spawn(io_context, listener_ipv4(nullptr, nullptr, (uint16_t)port), detached);
 		}
 		else if (argc == 3)
 		{
-			co_spawn(io_context, listener_ipv4(argv[1], argv[2]), detached);
 			co_spawn(io_context, listener_ipv6(argv[1], argv[2]), detached);
+			if constexpr (!linux_system)
+				co_spawn(io_context, listener_ipv4(argv[1], argv[2]), detached);
 		}
 		else if (argc == 4)
 		{
@@ -917,8 +931,9 @@ int main(int argc, char *argv[])
 				std::printf("Incorrect port number: %d\n", (uint16_t)port);
 				return 1;
 			}
-			co_spawn(io_context, listener_ipv4(argv[2], argv[3], port), detached);
 			co_spawn(io_context, listener_ipv6(argv[2], argv[3], port), detached);
+			if constexpr (!linux_system)
+				co_spawn(io_context, listener_ipv4(argv[2], argv[3], port), detached);
 		}
 		else
 		{
