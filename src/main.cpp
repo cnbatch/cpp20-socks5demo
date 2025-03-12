@@ -232,7 +232,7 @@ private:
 				reply_size = socks_header_ipv4_size;
 				reply[3] = socks_atyp_ipv4;
 				asio::ip::address_v4::bytes_type v4_bytes = remote_address.to_v4().to_bytes();
-				*(uint32_t *)v4_bytes.data() = *(uint32_t *)(reply.data() + 4);
+				*(uint32_t *)(reply.data() + 4) = *(uint32_t *)v4_bytes.data();
 				*(uint16_t *)(reply.data() + 8) = htons(remote_port);
 			}
 
