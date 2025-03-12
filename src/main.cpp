@@ -759,7 +759,7 @@ awaitable<void> socks5_access(tcp_socket client_socket, const char *username, co
 				reply_size = socks_header_ipv4_size;
 				reply[3] = socks_atyp_ipv4;
 				asio::ip::address_v4::bytes_type v4_bytes = tcp_local_address->to_v4().to_bytes();
-				*(uint32_t *)v4_bytes.data() = *(uint32_t *)(reply.data() + 4);
+				*(uint32_t *)(reply.data() + 4)  = *(uint32_t *)v4_bytes.data();
 				*(uint16_t *)(reply.data() + 8) = htons(listener_port);
 			}
 
@@ -820,7 +820,7 @@ awaitable<void> socks5_access(tcp_socket client_socket, const char *username, co
 			else
 			{
 				asio::ip::address_v4::bytes_type v4_bytes = local_address.to_v4().to_bytes();
-				*(uint32_t *)v4_bytes.data() = *(uint32_t *)(reply.data() + 4);
+				*(uint32_t *)(reply.data() + 4) = *(uint32_t *)v4_bytes.data();
 				*(uint16_t *)(reply.data() + 8) = htons(binding_endpoint.port());
 			}
 
